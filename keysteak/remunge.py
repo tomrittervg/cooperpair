@@ -13,6 +13,7 @@ from Crypto.PublicKey import RSA
 from Crypto.Util.number import bytes_to_long, long_to_bytes
 
 from gmpy import bit_length
+from gmpy import invert
 
 from pgpdump import dumpbuffer
 
@@ -53,6 +54,36 @@ def v3pubkey(n, e):
     plen = two_octet(len(body))
     return bytearray().join([ptag, plen, body])
 
+def v3privkey(n, e, d, p, q):
+    """Builds a PGPv3 private key packet
+    """
+    ptag = '\x95'
+    pver = '\x03'
+    timestamp = four_octet(2 ** 25 * 41)
+    expiration = two_octet(0)
+    pubkey_algo = '\x01'
+    s2k_encryption = '\x00' #Not Encrypted
+
+    #Why does OpenPGP make q the larger prime?
+    if p > q:
+        tmp = q
+        q = p
+        p = tmp
+    u = invert(p, q)
+
+    checksum = 0
+    for b in bytearray().join([to_mpi(d), to_mpi(p), to_mpi(q), to_mpi(u)]):
+      checksum += b
+    checksum %= 65536
+    checksum = two_octet(checksum)
+
+    body = bytearray().join([pver, timestamp, expiration, pubkey_algo,
+                             to_mpi(n), to_mpi(e), s2k_encryption, 
+                             to_mpi(d), to_mpi(p), to_mpi(q), to_mpi(u), 
+                             checksum])
+    plen = two_octet(len(body))
+    return bytearray().join([ptag, plen, body])
+
 
 def remunge(params, raw_uid):
     """Creates a new PGPv3 key and PGPv4 signature.
@@ -60,7 +91,9 @@ def remunge(params, raw_uid):
     n, e, d, p, q = params = [long(param) for param in params]
 
     pubkey = v3pubkey(n, e)
+    privkey = v3privkey(n, e, d, p, q)
     restamped_pub = dumpbuffer(str(pubkey))[0]
+    restamped_priv = bytearray().join([b.raw_data for b in dumpbuffer(str(privkey))])
 
     raw_uid = (raw_uid.encode('utf-8')
                if isinstance(raw_uid, unicode)
@@ -109,5 +142,8 @@ def remunge(params, raw_uid):
 
     with open(urlsafe_b64encode(SHA512.new(complete).digest()), 'w') as f:
         f.write(complete)
+    with open(urlsafe_b64encode(SHA512.new(restamped_priv + (b"\xb4" + chr(len(raw_uid))) + raw_uid).digest()), 'w') as f:
+        f.write(restamped_priv + (b"\xb4" + chr(len(raw_uid))) + raw_uid)
+    
 
     return complete
